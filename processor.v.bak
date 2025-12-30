@@ -1,0 +1,177 @@
+`timescale 1ns / 1ps
+
+module processor(
+    input clock,
+    input reset,
+
+    // Serial Port Connections
+    input [7:0] serial_in,
+    input serial_ready_in,
+    input serial_valid_in,
+    output [7:0] serial_out,
+    output serial_rden_out,
+    output serial_wren_out
+);
+
+    // ========================================================================
+    // Internal Wires
+    // ========================================================================
+    
+    // Instruction Fields
+    wire [31:0] instruction;
+    wire [5:0]  opcode = instruction[31:26];
+    wire [4:0]  rs     = instruction[25:21];
+    wire [4:0]  rt     = instruction[20:16];
+    wire [4:0]  rd     = instruction[15:11];
+    wire [5:0]  funct  = instruction[5:0];
+    wire [15:0] imm    = instruction[15:0];
+
+    // Control Signals (Now driven by Control Unit)
+    wire reg_dst;               
+    wire alu_src;               
+    wire mem_to_reg;            
+    wire mem_read;              
+    wire mem_write;             
+    wire reg_write;             
+    wire [5:0] alu_func;        
+    wire [1:0] data_size;       
+
+    // Datapath Wires
+    wire [31:0] pc_out;
+    wire [31:0] pc_plus_4;
+    wire [31:0] sign_ext_imm;
+    wire [4:0]  write_reg_addr; 
+    wire [31:0] write_reg_data; 
+    wire [31:0] rs_data_out;
+    wire [31:0] rt_data_out;
+    wire [31:0] alu_input_b;    
+    wire [31:0] alu_result;
+    wire        alu_branch_out; 
+    wire        alu_jump_out;   
+    wire [31:0] dmem_read_data;
+
+    // ========================================================================
+    // CONTROL UNIT INSTANTIATION
+    // ========================================================================
+    control_unit control (
+        .opcode(opcode),
+        .funct(funct),
+        .reg_dst(reg_dst),
+        .alu_src(alu_src),
+        .mem_to_reg(mem_to_reg),
+        .reg_write(reg_write),
+        .mem_read(mem_read),
+        .mem_write(mem_write),
+        .alu_func(alu_func),
+        .data_size(data_size)
+    );
+
+    // ========================================================================
+    // 1. Instruction Fetch
+    // ========================================================================
+    pc_reg pc_register (
+        .clock(clock),
+        .reset(reset),
+        .pc_next_in(pc_plus_4), // No branch mux yet
+        .pc_out(pc_out)
+    );
+
+    adder pc_plus_4_adder (
+        .A_in(pc_out),
+        .B_in(32'd4),
+        .Sum_out(pc_plus_4)
+    );
+    
+    // NOTE: Update "blank.memh" to "lab7-test.inst_rom.memh" for testing!
+    inst_rom #(
+        .INIT_PROGRAM("C:/intelFPGA_lite/18.1/single-cycle-mips/lab7_test/lab7-test.inst_rom.memh") 
+    ) imem (
+        .clock(clock),
+        .reset(reset),
+        .addr_in(pc_out),
+        .data_out(instruction)
+    );
+
+    // ========================================================================
+    // 2. Decode / Register Fetch
+    // ========================================================================
+    mux2 #(.WIDTH(5)) reg_dst_mux (
+        .in0(rt),
+        .in1(rd),
+        .sel(reg_dst),
+        .out(write_reg_addr)
+    );
+
+    reg_file registers (
+        .clock(clock),
+        .reset(reset),
+        .we_in(reg_write),
+        .raddr1_in(rs),
+        .raddr2_in(rt),
+        .waddr_in(write_reg_addr),
+        .wdata_in(write_reg_data),
+        .rdata1_out(rs_data_out),
+        .rdata2_out(rt_data_out)
+    );
+
+    sign_extender sign_ext (
+        .imm_in(imm),
+        .imm_out(sign_ext_imm)
+    );
+
+    // ========================================================================
+    // 3. Execution
+    // ========================================================================
+    mux2 #(.WIDTH(32)) alu_src_mux (
+        .in0(rt_data_out),
+        .in1(sign_ext_imm),
+        .sel(alu_src),
+        .out(alu_input_b)
+    );
+
+    alu main_alu (
+        .Func_in(alu_func),
+        .A_in(rs_data_out),
+        .B_in(alu_input_b),
+        .O_out(alu_result),
+        .Branch_out(alu_branch_out),
+        .Jump_out(alu_jump_out)
+    );
+
+    // ========================================================================
+    // 4. Memory
+    // ========================================================================
+    // NOTE: Update these parameters for testing!
+    data_memory #(
+        .INIT_PROGRAM0("blank.memh"),
+        .INIT_PROGRAM1("blank.memh"),
+        .INIT_PROGRAM2("blank.memh"),
+        .INIT_PROGRAM3("blank.memh")
+    ) dmem (
+        .clock(clock),
+        .reset(reset),
+        .addr_in(alu_result),
+        .writedata_in(rt_data_out),
+        .re_in(mem_read),
+        .we_in(mem_write),
+        .size_in(data_size),
+        .readdata_out(dmem_read_data),
+        .serial_in(serial_in),
+        .serial_ready_in(serial_ready_in),
+        .serial_valid_in(serial_valid_in),
+        .serial_out(serial_out),
+        .serial_rden_out(serial_rden_out),
+        .serial_wren_out(serial_wren_out)
+    );
+
+    // ========================================================================
+    // 5. Write Back
+    // ========================================================================
+    mux2 #(.WIDTH(32)) mem_to_reg_mux (
+        .in0(alu_result),
+        .in1(dmem_read_data),
+        .sel(mem_to_reg),
+        .out(write_reg_data)
+    );
+
+endmodule
